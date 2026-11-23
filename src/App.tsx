@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { BrowserQRCodeReader } from '@zxing/browser';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { Camera, ChartNoAxesCombined, Check, ChevronRight, ClipboardList, Download, Info, LockKeyhole, LogOut, Package, ScanLine, Search, ShieldAlert, X } from 'lucide-react';
-import { actions, dateTime, deltaE, initial, readStore, rgbString, rgbToLab } from './data';
+import { actions, dateTime, initial, readStore, rgbString, rgbToLab } from './data';
 import type { Product, Scan, Status } from './data';
 import { analyzeLiveFrame } from './autoScan';
 import './style.css';
