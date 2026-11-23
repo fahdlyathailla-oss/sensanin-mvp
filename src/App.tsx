@@ -1,27 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
-import type { PointerEvent as ReactPointerEvent } from 'react';
 import { BrowserQRCodeReader } from '@zxing/browser';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { Camera, ChartNoAxesCombined, Check, ChevronRight, ClipboardList, Download, Eye, ImagePlus, Info, LockKeyhole, LogOut, Package, RotateCcw, ScanLine, Search, ShieldAlert, X } from 'lucide-react';
+import { Camera, ChartNoAxesCombined, Check, ChevronRight, ClipboardList, Download, Info, LockKeyhole, LogOut, Package, ScanLine, Search, ShieldAlert, X } from 'lucide-react';
 import { actions, dateTime, deltaE, initial, readStore, rgbString, rgbToLab } from './data';
 import type { Product, Scan, Status } from './data';
+import { analyzeLiveFrame } from './autoScan';
 import './style.css';
 
 const asset = (name: string) => `${import.meta.env.BASE_URL}assets/${name}`;
 const disclaimer = 'Klasifikasi kesegaran pada prototipe ini merupakan simulasi dan belum divalidasi terhadap pengukuran laboratorium. SENSANIN adalah alat pendukung keputusan, bukan pengganti pengujian mikrobiologi atau inspeksi keamanan pangan.';
 type Tab = 'summary' | 'scan' | 'inventory';
-type ROI = {x: number; y: number; w: number; h: number};
-type Point = {x: number; y: number};
 const labels: Record<Status,string> = { FRESH:'Segar', PRIORITY:'Prioritas Penjualan', 'INSPECTION REQUIRED':'Perlu Inspeksi' };
 const colors:Record<Status,string> = {FRESH:'green',PRIORITY:'yellow','INSPECTION REQUIRED':'red'};
-const clamp = (n:number) => Math.max(0,Math.min(255,n));
-const normalize = (a:Point,b:Point):ROI => ({x:Math.min(a.x,b.x), y:Math.min(a.y,b.y),w:Math.abs(a.x-b.x),h:Math.abs(a.y-b.y)});
 const demoHistory:Scan[] = initial.slice(0,9).map((p,i)=>({id:`DEMO-${i+1}`,productId:p.id,time:p.lastScannedAt,rgb:p.currentColor,lab:rgbToLab(p.currentColor),deltaE:p.deltaE,type:'SIMULATED'}));
 
 function Logo({inverse=false}:{inverse?:boolean}){return <div className={'logo '+(inverse?'inverse':'')}><img src={asset('sensanin-mark.png')} alt="Simbol SENSANIN"/><span><strong>SENSANIN</strong><small>— SMART LABELLING —</small></span></div>}
 function StatusPill({status}:{status:Status}){return <span className={'pill '+colors[status]}><span className="status-dot"/>{labels[status]}</span>}
-function readImage(file:File):Promise<HTMLImageElement>{return new Promise((resolve,reject)=>{const url=URL.createObjectURL(file),im=new Image();im.onload=()=>{URL.revokeObjectURL(url);resolve(im)};im.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('Foto tidak dapat dibaca'))};im.src=url})}
-function readRegion(img:HTMLImageElement,roi:ROI):[number,number,number]{const cv=document.createElement('canvas');cv.width=img.naturalWidth;cv.height=img.naturalHeight;const ctx=cv.getContext('2d',{willReadFrequently:true});if(!ctx)throw new Error('Canvas tidak tersedia');ctx.drawImage(img,0,0);const x=Math.floor(roi.x*cv.width),y=Math.floor(roi.y*cv.height);const w=Math.max(1,Math.min(cv.width-x,Math.floor(roi.w*cv.width))),h=Math.max(1,Math.min(cv.height-y,Math.floor(roi.h*cv.height)));if(w<2||h<2)throw new Error('Kotak seleksi terlalu kecil');const pix=ctx.getImageData(x,y,w,h).data;let sum=[0,0,0],n=0;for(let i=0;i<pix.length;i+=4){if(pix[i+3]<128)continue;for(let j=0;j<3;j++)sum[j]+=pix[i+j];n++}if(!n)throw new Error('Tidak ada piksel yang bisa dianalisis');return sum.map(v=>v/n) as [number,number,number]}
 function lookupQR(s:string,items:Product[]){let id=s;try{const v=JSON.parse(s);id=v.productId||v.id||v.packageId||s}catch{/* plain code */}return items.find(p=>p.id===id||s.includes(p.id))}
 
 export default function App(){
@@ -35,15 +29,11 @@ export default function App(){
   const [search,setSearch]=useState('');const [filter,setFilter]=useState('ALL');
   const [detail,setDetail]=useState<Product|null>(null);
   const [cameraOn,setCameraOn]=useState(false);const [cameraError,setCameraError]=useState('');const [scannedQR,setScannedQR]=useState(false);
-  const [image,setImage]=useState<HTMLImageElement|null>(null);const [imageSrc,setImageSrc]=useState('');
-  const [roi,setRoi]=useState<{indicator:ROI|null;reference:ROI|null}>({indicator:null,reference:null});
-  const [roiMode,setRoiMode]=useState<'indicator'|'reference'>('indicator');const start=useRef<Point|null>(null);
-  const [referenceTarget,setReferenceTarget]=useState('#ffffff');
   const [baseline,setBaseline]=useState<[number,number,number]>(initial[0].initialColorReference);
-  const [priority,setPriority]=useState(()=>readStore('sensanin-threshold-priority',12));
-  const [inspection,setInspection]=useState(()=>readStore('sensanin-threshold-inspection',25));
+  const [priority]=useState(()=>readStore('sensanin-threshold-priority',12));
+  const [inspection]=useState(()=>readStore('sensanin-threshold-inspection',25));
   const [result,setResult]=useState<Scan|null>(null);const [message,setMessage]=useState('');
-  const videoRef=useRef<HTMLVideoElement>(null);const cameraControls=useRef<{stop:()=>void}|null>(null);const qrLocked=useRef(false);const fileRef=useRef<HTMLInputElement>(null);
+  const videoRef=useRef<HTMLVideoElement>(null);const cameraControls=useRef<{stop:()=>void}|null>(null);const qrLocked=useRef(false);const recognizedFrames=useRef(0);
   const selected=products.find(p=>p.id===selectedId)||products[0];
   const count={total:products.length,fresh:products.filter(x=>x.freshnessStatus==='FRESH').length,priority:products.filter(x=>x.freshnessStatus==='PRIORITY').length,inspection:products.filter(x=>x.freshnessStatus==='INSPECTION REQUIRED').length};
   const displayed=result&&result.productId===selected.id?result:null;
@@ -54,66 +44,56 @@ export default function App(){
   useEffect(()=>{localStorage.setItem('sensanin-products-v2',JSON.stringify(products))},[products]);
   useEffect(()=>{localStorage.setItem('sensanin-scans-v2',JSON.stringify(history))},[history]);
   useEffect(()=>{localStorage.setItem('sensanin-threshold-priority',String(priority));localStorage.setItem('sensanin-threshold-inspection',String(inspection))},[priority,inspection]);
-  // Live QRIS-style scan: decode frames continuously, and on a known QR silently
-  // freeze the current frame in memory for the colorimetry ROI step.
-  // No shutter, no photograph download, and no background upload.
+  // QR is decoded from live video. The calibrated demo LABEL GEOMETRY, not
+  // arbitrary QR content, determines where both color patches are sampled.
+  // No still photo, upload, manual ROI, or unverified fallback ΔE.
   useEffect(()=>{
     if(!loggedIn || tab!=='scan' || !cameraOn || !videoRef.current)return;
     let cancelled=false;
     const reader=new BrowserQRCodeReader();
     setCameraError('');
-    setMessage('Scanner aktif. Arahkan Color QR Code ke dalam bingkai. Tidak perlu mengambil foto.');
+    setMessage('Kamera aktif. Arahkan LABEL DEMO SENSANIN lengkap (QR + dua patch warna).');
     (async()=>{
       try{
         const controls=await reader.decodeFromConstraints(
-          {audio:false,video:{facingMode:{ideal:'environment'}}},
-          videoRef.current!, result=>{
-            if(!result||cancelled||qrLocked.current)return;
-            const product=lookupQR(result.getText(),products);
-            if(!product){setMessage('QR terbaca tetapi ID tidak terdaftar. Gunakan QR produk demo atau pilih manual.');return;}
+          {audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}}},
+          videoRef.current!, decoded=>{
+            if(!decoded||cancelled||qrLocked.current)return;
+            const product=lookupQR(decoded.getText(),products);
+            if(!product){setMessage('QR berhasil dibaca, tetapi ID tidak terdaftar. Gunakan contoh label demo yang disediakan.');return;}
             const video=videoRef.current;
-            if(!video||!video.videoWidth)return;
+            if(!video?.videoWidth)return;
+            const sample=analyzeLiveFrame(video,decoded,product.initialColorReference);
+            if(!sample.ok){
+              recognizedFrames.current=0;
+              setMessage('QR '+product.id+' terdeteksi. '+sample.reason);
+              return;
+            }
+            // Require repeated successful frames before accepting the scan.
+            recognizedFrames.current+=1;
+            if(recognizedFrames.current<2){setMessage('QR '+product.id+' terdeteksi. Tahan label sebentar untuk analisis warna otomatis...');return;}
             qrLocked.current=true;
-            const c=document.createElement('canvas');
-            c.width=video.videoWidth;
-            c.height=video.videoHeight;
-            c.getContext('2d')!.drawImage(video,0,0);
-            const frame=new Image();
-            frame.onload=()=>{
-              if(cancelled)return;
-              setImage(frame);
-              setImageSrc(frame.src);
-              setRoi({indicator:null,reference:null});
-              setResult(null);
-              setSelectedId(product.id);
-              setBaseline(product.initialColorReference);
-              setScannedQR(true);
-              setMessage(`✓ QR ${product.id} dikenali otomatis. Frame kamera telah diambil secara internal. Pilih area indikator dan referensi untuk menghitung ΔE (demo).`);
-              setCameraOn(false);
-              document.getElementById('colorimetry-card')?.scrollIntoView({behavior:'smooth',block:'nearest'});
-            };
-            frame.onerror=()=>{qrLocked.current=false;setMessage('Gagal membaca frame kamera. Coba pindai lagi.')};
-            frame.src=c.toDataURL('image/jpeg',.92);
+            const de=sample.deltaE;
+            const nextStatus:Status=de>=inspection?'INSPECTION REQUIRED':de>=priority?'PRIORITY':'FRESH';
+            const scan:Scan={id:`SCAN-${Date.now()}`,productId:product.id,time:new Date().toISOString(),rgb:sample.rgb,lab:sample.lab,deltaE:de,type:'MEASURED DEMO',note:'Auto-sampled from current SENSANIN label geometry using QR + white label background. Not laboratory validated.'};
+            setSelectedId(product.id);
+            setBaseline(product.initialColorReference);
+            setResult(scan);
+            setProducts(old=>old.map(p=>p.id===product.id?{...p,currentColor:scan.rgb,deltaE:+de.toFixed(2),lastScannedAt:scan.time,freshnessStatus:nextStatus,recommendedAction:actions[nextStatus]}:p));
+            setHistory(old=>[scan,...old]);
+            setScannedQR(true);
+            setCameraOn(false);
+            setMessage(`✓ Scan otomatis berhasil untuk ${product.id}. ΔE dihitung dari frame kamera dan riwayat tersimpan. Status tetap simulasi.`);
           });
         if(cancelled)controls.stop();else cameraControls.current=controls;
-      }catch(e){if(!cancelled){setCameraError('Kamera tidak tersedia. Periksa izin browser dan gunakan HTTPS. '+String(e));setCameraOn(false)}}
+      }catch(e){if(!cancelled){setCameraError('Gagal mengakses kamera: periksa izin browser dan HTTPS. '+String(e));setCameraOn(false)}}
     })();
     return ()=>{cancelled=true;cameraControls.current?.stop();cameraControls.current=null};
-  },[cameraOn,tab,loggedIn]);
-  function navigate(t:Tab){if(t!=='scan')setCameraOn(false);if(t==='scan'){qrLocked.current=false;setScannedQR(false);setCameraOn(true)}setTab(t);setMessage('');window.scrollTo({top:0,behavior:'smooth'})}
+  },[cameraOn,tab,loggedIn,products,priority,inspection]);
+  function navigate(t:Tab){if(t!=='scan')setCameraOn(false);if(t==='scan'){qrLocked.current=false;recognizedFrames.current=0;setScannedQR(false);setResult(null);setCameraOn(true)}setTab(t);setMessage('');window.scrollTo({top:0,behavior:'smooth'})}
   function login(){const name=loginName.trim()||'Staf Supermarket';sessionStorage.setItem('sensanin-demo-login','yes');sessionStorage.setItem('sensanin-demo-user',name);setUser(name);setLoggedIn(true);setTab('summary')}
   function logout(){setCameraOn(false);sessionStorage.removeItem('sensanin-demo-login');sessionStorage.removeItem('sensanin-demo-user');setLoggedIn(false);setResult(null)}
-  function selectProduct(id:string){const p=products.find(v=>v.id===id);if(!p)return;setSelectedId(id);setBaseline(p.initialColorReference);setResult(null)}
-  async function upload(file?:File){if(!file)return;setCameraOn(false);try{const pic=await readImage(file);setImage(pic);const c=document.createElement('canvas');const scale=Math.min(1,1100/pic.naturalWidth);c.width=pic.naturalWidth*scale;c.height=pic.naturalHeight*scale;c.getContext('2d')!.drawImage(pic,0,0,c.width,c.height);setImageSrc(c.toDataURL('image/jpeg',.9));setRoi({indicator:null,reference:null});setResult(null);setMessage('Gambar diunggah sebagai alternatif. Pilih area sensor (ungu) dan patch warna referensi.');try{const temp=document.createElement('img');temp.src=c.toDataURL('image/png');await new Promise<void>(r=>temp.onload=()=>r());const qr=await new BrowserQRCodeReader().decodeFromImageElement(temp);const p=lookupQR(qr.getText(),products);if(p){selectProduct(p.id);setScannedQR(true);setMessage(`QR dikenali: ${p.id}. Lanjutkan seleksi area warna.`)}}catch{/* QR not required for photo selection */}}catch(e){setMessage((e as Error).message)}}
-  function demoImage(){const im=new Image();im.onload=()=>{setImage(im);setImageSrc(im.src);setRoi({indicator:null,reference:null});setResult(null);setMessage('Foto ilustrasi dimuat. Pilih dua area ROI sendiri. Data ini bukan hasil eksperimen.')};im.src=asset('demo-beef.jpg')}
-  function point(e:ReactPointerEvent<HTMLDivElement>):Point{const b=e.currentTarget.getBoundingClientRect();return{x:Math.max(0,Math.min(1,(e.clientX-b.left)/b.width)),y:Math.max(0,Math.min(1,(e.clientY-b.top)/b.height))}}
-  function down(e:ReactPointerEvent<HTMLDivElement>){if(!imageSrc)return;start.current=point(e);e.currentTarget.setPointerCapture(e.pointerId);setRoi(r=>({...r,[roiMode]:{...start.current!,w:0,h:0}}))}
-  function move(e:ReactPointerEvent<HTMLDivElement>){if(!start.current)return;const rect=normalize(start.current,point(e));setRoi(r=>({...r,[roiMode]:rect}))}
-  function up(){start.current=null}
-  function analyze(){if(!image||!roi.indicator||!roi.reference||roi.indicator.w<.005||roi.reference.w<.005){setMessage('Pilih dua kotak ROI terlebih dahulu: sensor indikator dan referensi warna.');return}try{const ind=readRegion(image,roi.indicator),ref=readRegion(image,roi.reference);const target=[1,3,5].map(i=>parseInt(referenceTarget.slice(i,i+2),16));const rgb=ind.map((v,i)=>clamp(v*target[i]/Math.max(1,ref[i]))) as [number,number,number];const lab=rgbToLab(rgb);const de=deltaE(lab,rgbToLab(baseline));setResult({id:`SCAN-${Date.now()}`,productId:selected.id,time:new Date().toISOString(),rgb:rgb.map(Math.round) as [number,number,number],lab,deltaE:de,type:'MEASURED DEMO'});setMessage('ΔE dihitung dari piksel foto. Status kesegaran tetap simulasi dan tidak tervalidasi.')}catch(e){setMessage((e as Error).message)}}
-  function saveResult(){if(!displayed)return;setProducts(old=>old.map(p=>p.id===selected.id?{...p,currentColor:displayed.rgb,deltaE:+displayed.deltaE.toFixed(2),lastScannedAt:displayed.time,freshnessStatus:status,recommendedAction:actions[status]}:p));setHistory(old=>[displayed,...old]);setResult(null);setMessage('Hasil tersimpan. Ringkasan dan Data Inventory sudah diperbarui.')}
   function csv(){const cols:(keyof Product)[]=['id','productName','beefType','batchNumber','productionDate','expirationDate','deltaE','freshnessStatus','lastScannedAt'];const text=[cols.join(','),...products.map(p=>cols.map(k=>'"'+String(p[k]).replace(/"/g,'""')+'"').join(','))].join('\r\n');const url=URL.createObjectURL(new Blob([text],{type:'text/csv'}));const a=document.createElement('a');a.href=url;a.download='sensanin-inventory.csv';a.click();URL.revokeObjectURL(url)}
-  const rectStyle=(r:ROI|null)=>r?{display:'block',left:r.x*100+'%',top:r.y*100+'%',width:r.w*100+'%',height:r.h*100+'%'}:{display:'none'};
 
   if(!loggedIn)return <div className="login-page"><div className="login-orb one"/><div className="login-orb two"/><main className="login-panel"><Logo/><div className="login-art"><span className="login-art-icon"><ScanLine size={36}/></span><h1>Welcome to SENSANIN</h1><p>Smart Freshness Monitoring for Better Inventory Decisions.</p></div><div className="login-fields"><span className="eyebrow">AKSES WORKSPACE</span><h2>Masuk ke Dashboard</h2><p>Monitoring inventaris daging sapi berbasis indikator warna.</p><label htmlFor="username">Nama petugas</label><input id="username" autoComplete="name" placeholder="Contoh: Staf Supermarket" value={loginName} onChange={e=>setLoginName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&login()}/><button className="primary wide" onClick={login}>Masuk ke SENSANIN <ChevronRight size={18}/></button><div className="demo-note"><LockKeyhole size={16}/> Mode demo — tidak menggunakan password atau server autentikasi. Bukan sistem login produksi.</div></div></main></div>;
 
@@ -126,18 +106,27 @@ export default function App(){
       <div className="content-grid"><section className="surface-card"><div className="card-head"><div><span className="eyebrow">STATUS DISTRIBUTION</span><h3>Kondisi Inventaris</h3></div><span className="outline-badge">Data simulasi</span></div><div className="distribution"><div className="donut" style={{background:`conic-gradient(#29b67a 0 ${count.fresh/count.total*100}%,#ffbd4a ${count.fresh/count.total*100}% ${(count.fresh+count.priority)/count.total*100}%,#ef6976 ${(count.fresh+count.priority)/count.total*100}% 100%)`}}><div><strong>{count.total}</strong><span>Paket</span></div></div><div className="distribution-key">{([['FRESH',count.fresh],['PRIORITY',count.priority],['INSPECTION REQUIRED',count.inspection]] as [Status,number][]).map(([s,n])=><div key={s}><span className={'legend-dot '+colors[s]}/><span>{labels[s]}</span><strong>{n}</strong></div>)}</div></div></section><section className="surface-card"><div className="card-head"><div><span className="eyebrow">ACTIVITY</span><h3>Aktivitas Pemindaian</h3></div></div><div className="activity-list">{history.slice(0,5).map(h=>{const p=products.find(p=>p.id===h.productId);return <div className="activity" key={h.id}><div className="activity-icon"><ScanLine size={19}/></div><div><strong>{p?.productName||h.productId}</strong><span>{h.productId} · {dateTime(h.time)}</span></div><b>ΔE {h.deltaE.toFixed(1)}</b></div>})}</div></section></div>
       <section className="surface-card attention"><div className="card-head"><div><span className="eyebrow">ACTION REQUIRED</span><h3>Paket yang Perlu Perhatian</h3></div><button className="text-action" onClick={()=>navigate('inventory')}>Lihat semua <ChevronRight size={16}/></button></div>{products.filter(p=>p.freshnessStatus!=='FRESH').slice(0,5).map(p=><div className="attention-row" key={p.id}><div className="product-thumb"><Package size={20}/></div><div className="attention-copy"><strong>{p.productName}</strong><span>{p.id} · {p.batchNumber}</span></div><StatusPill status={p.freshnessStatus}/></div>)}</section><aside className="disclaimer"><Info size={18}/>{disclaimer}</aside></>}
 
-      {tab==='scan'&&<><section className="page-heading"><div><span className="eyebrow">SMART LABELLING / SCAN</span><h1>Mulai Scan</h1><p>Arahkan kamera ke QR Code: identitas produk dibaca otomatis seperti QRIS, tanpa tombol foto.</p></div></section><div className="scan-steps"><span className="chosen">1. Live Scan QR</span><ChevronRight size={15}/><span className={imageSrc?'chosen':''}>2. Pilih ROI Warna</span><ChevronRight size={15}/><span className={result?'chosen':''}>3. Analisis</span></div>
-      <div className="scan-grid"><section className="surface-card"><div className="card-head"><div><span className="eyebrow">01 / IMAGE ACQUISITION</span><h3>Pemindaian Label</h3></div><span className="outline-badge">{cameraOn?'● LIVE SCAN':scannedQR?'✓ QR TERBACA':'SCANNER SIAP'}</span></div>
-      <div className="camera-frame">{cameraOn?<video ref={videoRef} autoPlay muted playsInline className="video-feed"/>:<img src={imageSrc||asset('demo-beef.jpg')} alt="Pratinjau label daging SENSANIN"/>}<div className="camera-shade"/><div className="scan-corners"><i/><i/><i/><i/><div className="scan-beam"/></div><span className="camera-caption">{cameraOn?'Arahkan QR ke bingkai — otomatis terbaca':scannedQR?'QR berhasil dipindai secara live':imageSrc?'Gambar tersedia untuk analisis warna':'Aktifkan scanner QR live'}</span></div>
-      <div className="camera-buttons"><button className="secondary" onClick={()=>fileRef.current?.click()}><ImagePlus size={17}/> Upload Gambar (Cadangan)</button>{cameraOn?<button className="secondary" onClick={()=>setCameraOn(false)}><X size={17}/> Hentikan Scanner</button>:<button className="primary" onClick={()=>{qrLocked.current=false;setScannedQR(false);setCameraError('');setResult(null);setCameraOn(true)}}><ScanLine size={18}/> {scannedQR?'Scan QR Lagi':'Aktifkan Live Scan'}</button>}</div><div className="live-scan-hint"><ScanLine size={16}/><span>QR dibaca langsung dari video kamera. Saat terdeteksi, frame disimpan sementara hanya di browser untuk seleksi area warna — tanpa tombol foto atau upload ke server.</span></div><button className="demo-image-link" onClick={demoImage}><Eye size={16}/> Gunakan foto contoh untuk demonstrasi</button>{cameraError&&<p className="error-text">{cameraError}</p>}
-      <div className="section-divider"/><label className="field-label" htmlFor="product-select">Identitas Kemasan</label><select id="product-select" className="field" value={selectedId} onChange={e=>selectProduct(e.target.value)}>{products.map(p=><option key={p.id} value={p.id}>{p.id} — {p.productName}</option>)}</select><div className="product-summary"><div className="product-thumb"><Package size={23}/></div><div><strong>{selected.productName}</strong><span>Batch {selected.batchNumber}</span></div><StatusPill status={selected.freshnessStatus}/></div></section>
-      <section id="colorimetry-card" className="surface-card"><div className="card-head"><div><span className="eyebrow">02 / DIGITAL COLORIMETRY</span><h3>Analisis Warna Indikator</h3></div><span className="outline-badge">CIE76</span></div><p className="helper">Pilih kotak kuning pada indikator antosianin, lalu kotak biru pada patch referensi warna.</p><div className="roi-controls"><button className={roiMode==='indicator'?'roi-active':''} onClick={()=>setRoiMode('indicator')}><span className="square yellow"/> Indikator</button><button className={roiMode==='reference'?'roi-active':''} onClick={()=>setRoiMode('reference')}><span className="square cyan"/> Referensi</button><button onClick={()=>setRoi({indicator:null,reference:null})} aria-label="Reset area"><RotateCcw size={16}/></button></div><div className="roi-canvas">{imageSrc&&image?<div className="roi-stage" style={{aspectRatio:`${image.naturalWidth}/${image.naturalHeight}`}} onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up}><img draggable={false} src={imageSrc} alt="Foto untuk memilih area indikator dan patch kalibrasi"/><span className="roi-overlay indicator" style={rectStyle(roi.indicator)}/><span className="roi-overlay reference" style={rectStyle(roi.reference)}/></div>:<div className="roi-empty"><ScanLine size={34}/><b>Belum ada foto</b><span>Scan QR secara live untuk memperoleh frame otomatis, atau pilih gambar demo.</span></div>}</div><div className="settings-row"><div><label className="field-label">Warna Target Patch</label><input type="color" className="color-input" value={referenceTarget} onChange={e=>setReferenceTarget(e.target.value)}/></div><div><label className="field-label">Baseline RGB</label><div className="rgb-fields">{baseline.map((v,i)=><input type="number" key={i} min="0" max="255" value={v} onChange={e=>setBaseline(old=>old.map((n,j)=>j===i?clamp(Number(e.target.value)):n) as [number,number,number])}/>)}</div></div></div><div className="settings-row"><div><label className="field-label">Ambang Prioritas (demo)</label><input type="number" className="field" min="0" max={inspection-.01} value={priority} onChange={e=>setPriority(Math.max(0,Math.min(inspection-.01,Number(e.target.value))))}/></div><div><label className="field-label">Ambang Inspeksi (demo)</label><input type="number" className="field" min={priority+.01} value={inspection} onChange={e=>setInspection(Math.max(priority+.01,Number(e.target.value)))}/></div></div><button className="primary wide" onClick={analyze}><ChartNoAxesCombined size={17}/> Hitung Nilai ΔE</button>{message&&<div className="feedback">{message}</div>}
-      {displayed&&<div className="result-panel"><div className="result-head"><span className="eyebrow">HASIL PENGUKURAN GAMBAR</span><StatusPill status={status}/></div><div className="measurement-grid"><div><span>ΔE*ab</span><strong>{displayed.deltaE.toFixed(2)}</strong></div><div><span>RGB</span><strong className="result-sm">{displayed.rgb.join(', ')}</strong></div><div><span>L* a* b*</span><strong className="result-sm">{displayed.lab.map(n=>n.toFixed(1)).join(' / ')}</strong></div></div><div className="color-compare"><div><i style={{background:rgbString(baseline)}}/><span>Baseline</span></div><div><i style={{background:rgbString(displayed.rgb)}}/><span>Dari Foto</span></div></div><p className="helper">ΔE dihitung dari piksel foto menggunakan koreksi RGB sederhana. Kategori kesegaran hanya simulasi.</p><button className="primary wide" onClick={saveResult}><Check size={17}/> Simpan Hasil Scan</button></div>}</section></div><aside className="disclaimer"><ShieldAlert size={18}/>{disclaimer}</aside></>}
+      {tab==='scan'&&<><section className="page-heading"><div><span className="eyebrow">SMART LABELLING / AUTOMATIC SCAN</span><h1>Mulai Scan</h1><p>Seperti scan QRIS: kamera membaca label SENSANIN otomatis. QR dipakai untuk identifikasi produk, lalu patch ungu di kanan dianalisis tanpa foto atau seleksi manual.</p></div></section>
+      <div className="scan-grid"><section className="surface-card"><div className="card-head"><div><span className="eyebrow">01 / LIVE CAMERA</span><h3>Pindai Label SENSANIN</h3></div><span className="outline-badge">{cameraOn?'● LIVE':scannedQR?'✓ SELESAI':'SIAP'}</span></div>
+      <div className="camera-frame">{cameraOn?<video ref={videoRef} autoPlay muted playsInline className="video-feed"/>:<img src={asset('current-label-reference.png')} alt="Contoh label SENSANIN saat ini"/>}<div className="camera-shade"/><div className="scan-corners"><i/><i/><i/><i/><div className="scan-beam"/></div><span className="camera-caption">{cameraOn?'Tahan label lengkap di dalam bingkai':scannedQR?'✓ QR dan warna sudah dibaca':'Buka kamera untuk memindai'}</span></div>
+      <div className="camera-buttons">{cameraOn?<button className="secondary" onClick={()=>setCameraOn(false)}><X size={17}/> Hentikan</button>:<button className="primary wide" onClick={()=>{qrLocked.current=false;recognizedFrames.current=0;setScannedQR(false);setResult(null);setCameraError('');setCameraOn(true)}}><ScanLine size={18}/> {scannedQR?'Scan Kemasan Lain':'Buka Live Scanner'}</button>}</div>
+      {cameraError&&<p className="error-text">{cameraError}</p>}
+      {message&&<div className="feedback" role="status" aria-live="polite">{message}</div>}
+      <div className="live-scan-hint"><Info size={17}/><span><b>Label mengikuti desain SENSANIN saat ini.</b> QR di kiri dan indikator ungu besar di kanan. Sistem memakai area putih label sebagai referensi cahaya, jadi hindari bayangan dan pantulan berlebih.</span></div>
+      <a className="label-download" href={asset('current-label-reference.png')} target="_blank" rel="noreferrer">Lihat contoh label SENSANIN saat ini →</a>
+      <p className="helper">Untuk menguji kamera HP, gunakan label SENSANIN yang desainnya sama seperti contoh ini. QR perlu berisi ID produk yang terdaftar, sedangkan patch ungu harus terlihat utuh.</p></section>
+      <section className="surface-card"><div className="card-head"><div><span className="eyebrow">02 / AUTO COLORIMETRY</span><h3>Hasil Pemindaian Otomatis</h3></div><span className="outline-badge">CIE76 · DEMO</span></div>
+      {displayed?<><div className="scan-success"><Check size={22}/><div><strong>Berhasil dipindai dan disimpan</strong><span>{selected.productName} · {selected.id}</span></div></div>
+      <div className="measurement-grid"><div><span>ΔE*ab</span><strong>{displayed.deltaE.toFixed(2)}</strong></div><div><span>RGB</span><strong className="result-sm">{displayed.rgb.join(', ')}</strong></div><div><span>CIELAB</span><strong className="result-sm">{displayed.lab.map(x=>x.toFixed(1)).join(' / ')}</strong></div></div>
+      <div className="color-compare"><div><i style={{background:rgbString(baseline)}}/><span>Baseline</span></div><div><i style={{background:rgbString(displayed.rgb)}}/><span>Terukur (demo)</span></div></div>
+      <div className="scan-status"><span>Kategori inventaris (simulasi)</span><StatusPill status={status}/></div><p className="helper">RGB berasal dari patch ungu yang dinormalisasi memakai area putih label. Hubungan ΔE dengan keamanan daging belum divalidasi.</p>
+      <button className="primary wide" onClick={()=>navigate('summary')}><ChartNoAxesCombined size={18}/> Lihat Ringkasan Inventory</button></>:<div className="scan-pending"><ScanLine size={40}/><h3>Menunggu label terdeteksi</h3><p>Hasil QR, RGB, CIELAB, dan ΔE akan muncul otomatis. Tidak ada tombol foto atau seleksi ROI.</p></div>}
+      <div className="section-divider"/><p className="helper">Ambang simulasi: Priority ≥ {priority}; Inspection ≥ {inspection}. Tidak merepresentasikan batas keamanan pangan atau umur simpan.</p>
+      </section></div><aside className="disclaimer"><ShieldAlert size={18}/>{disclaimer}</aside></>}
 
       {tab==='inventory'&&<><section className="page-heading"><div><span className="eyebrow">PRODUCT & BATCH MANAGEMENT</span><h1>Data Inventory</h1><p>Kelola kemasan, lihat detail batch, dan riwayat perubahan warna.</p></div><button className="secondary desktop-action" onClick={csv}><Download size={17}/> Export CSV</button></section><div className="stat-grid compact"><div className="stat-card"><span>Total Paket</span><strong>{count.total}</strong></div><div className="stat-card"><span>Segar</span><strong>{count.fresh}</strong></div><div className="stat-card"><span>Prioritas</span><strong>{count.priority}</strong></div><div className="stat-card"><span>Perlu Inspeksi</span><strong>{count.inspection}</strong></div></div><section className="surface-card"><div className="card-head"><div><span className="eyebrow">REGISTERED PACKAGES</span><h3>Daftar Paket Daging</h3></div><button className="secondary export-mobile" onClick={csv}><Download size={16}/> CSV</button></div><div className="inventory-filters"><label className="search-field"><Search size={18}/><input placeholder="Cari ID, produk, atau batch..." value={search} onChange={e=>setSearch(e.target.value)}/></label><select className="field" value={filter} onChange={e=>setFilter(e.target.value)}><option value="ALL">Semua Status</option><option value="FRESH">Segar</option><option value="PRIORITY">Prioritas</option><option value="INSPECTION REQUIRED">Perlu Inspeksi</option></select></div><div className="table-container"><table><thead><tr><th>PRODUK</th><th>ID / BATCH</th><th>TANGGAL PRODUKSI</th><th>ΔE</th><th>STATUS</th><th>AKSI</th></tr></thead><tbody>{matching.map(p=><tr key={p.id}><td><strong>{p.productName}</strong><small>{p.beefType}</small></td><td>{p.id}<small>{p.batchNumber}</small></td><td>{p.productionDate}</td><td>{p.deltaE.toFixed(2)}</td><td><StatusPill status={p.freshnessStatus}/></td><td><button className="text-action" onClick={()=>setDetail(p)}>Detail <ChevronRight size={15}/></button></td></tr>)}</tbody></table>{!matching.length&&<div className="empty-table">Produk tidak ditemukan.</div>}</div></section><aside className="disclaimer"><Info size={18}/>{disclaimer}</aside></>}
     </main>
     <nav className="bottom-nav" aria-label="Navigasi utama SENSANIN"><button className={tab==='summary'?'active':''} onClick={()=>navigate('summary')} aria-label="Ringkasan Inventory"><span className="nav-icon"><ChartNoAxesCombined size={23}/></span><small>Ringkasan<br/>Inventory</small></button><button className={'scan-nav '+(tab==='scan'?'active':'')} onClick={()=>navigate('scan')} aria-label="Mulai Scan"><span className="scan-fab"><ScanLine size={30}/></span><small>Mulai Scan</small></button><button className={tab==='inventory'?'active':''} onClick={()=>navigate('inventory')} aria-label="Data Inventory"><span className="nav-icon"><ClipboardList size={23}/></span><small>Data<br/>Inventory</small></button></nav>
-    {detail&&<div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&setDetail(null)}><div className="detail-modal"><button className="close-modal" onClick={()=>setDetail(null)} aria-label="Tutup detail"><X/></button><span className="eyebrow">DETAIL PRODUK / {detail.id}</span><h2>{detail.productName}</h2><StatusPill status={detail.freshnessStatus}/><div className="detail-pairs"><div><span>ID Produk</span><strong>{detail.id}</strong></div><div><span>Nomor Batch</span><strong>{detail.batchNumber}</strong></div><div><span>Produksi</span><strong>{detail.productionDate}</strong></div><div><span>Kedaluwarsa tertera</span><strong>{detail.expirationDate}</strong></div><div><span>Pengukuran ΔE</span><strong>{detail.deltaE.toFixed(2)}</strong></div><div><span>Terakhir scan</span><strong>{dateTime(detail.lastScannedAt)}</strong></div></div><h3>Tren Perubahan Warna (Ilustratif)</h3><div className="trend-chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={chartData} margin={{top:10,right:10,bottom:0,left:-25}}><defs><linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#9136c8" stopOpacity={.35}/><stop offset="100%" stopColor="#9136c8" stopOpacity={0}/></linearGradient></defs><CartesianGrid vertical={false} stroke="#e9e4f2" strokeDasharray="4 4"/><XAxis dataKey="name" tick={{fontSize:10}}/><YAxis tick={{fontSize:10}}/><Tooltip formatter={v=>[Number(v).toFixed(2),'ΔE']}/><Area dataKey="de" stroke="#9233c6" fill="url(#trendFill)" strokeWidth={3}/></AreaChart></ResponsiveContainer></div><p className="helper">Contoh tren: data simulasi atau riwayat scan yang tersedia di browser ini, bukan prediksi umur simpan.</p><button className="primary wide" onClick={()=>{selectProduct(detail.id);setDetail(null);navigate('scan')}}><Camera size={17}/> Scan Produk Ini</button></div></div>}
-    <input ref={fileRef} type="file" accept="image/*" hidden onChange={e=>{void upload(e.target.files?.[0]);e.target.value=''}}/>
+    {detail&&<div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&setDetail(null)}><div className="detail-modal"><button className="close-modal" onClick={()=>setDetail(null)} aria-label="Tutup detail"><X/></button><span className="eyebrow">DETAIL PRODUK / {detail.id}</span><h2>{detail.productName}</h2><StatusPill status={detail.freshnessStatus}/><div className="detail-pairs"><div><span>ID Produk</span><strong>{detail.id}</strong></div><div><span>Nomor Batch</span><strong>{detail.batchNumber}</strong></div><div><span>Produksi</span><strong>{detail.productionDate}</strong></div><div><span>Kedaluwarsa tertera</span><strong>{detail.expirationDate}</strong></div><div><span>Pengukuran ΔE</span><strong>{detail.deltaE.toFixed(2)}</strong></div><div><span>Terakhir scan</span><strong>{dateTime(detail.lastScannedAt)}</strong></div></div><h3>Tren Perubahan Warna (Ilustratif)</h3><div className="trend-chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={chartData} margin={{top:10,right:10,bottom:0,left:-25}}><defs><linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#9136c8" stopOpacity={.35}/><stop offset="100%" stopColor="#9136c8" stopOpacity={0}/></linearGradient></defs><CartesianGrid vertical={false} stroke="#e9e4f2" strokeDasharray="4 4"/><XAxis dataKey="name" tick={{fontSize:10}}/><YAxis tick={{fontSize:10}}/><Tooltip formatter={v=>[Number(v).toFixed(2),'ΔE']}/><Area dataKey="de" stroke="#9233c6" fill="url(#trendFill)" strokeWidth={3}/></AreaChart></ResponsiveContainer></div><p className="helper">Contoh tren: data simulasi atau riwayat scan yang tersedia di browser ini, bukan prediksi umur simpan.</p><button className="primary wide" onClick={()=>{setSelectedId(detail.id);setBaseline(detail.initialColorReference);setDetail(null);navigate('scan')}}><Camera size={17}/> Scan Produk Ini</button></div></div>}
   </div>
 }
