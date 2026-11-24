@@ -9,3 +9,47 @@
 .camera-frame:has(.video-feed) .scan-corners{animation:live-frame-pulse 2.4s ease-in-out infinite}
 @keyframes live-frame-pulse{50%{filter:drop-shadow(0 0 9px rgba(184,91,246,.75))}}
 #colorimetry-card{scroll-margin-top:80px}
+/* Receiving & Activity modules / SENSANIN v3 */
+.bottom-nav{display:flex;justify-content:space-around;align-items:center;gap:2px;padding-left:6px;padding-right:6px}
+.bottom-nav>button{flex:1;min-width:0;padding:8px 2px}
+.bottom-nav small{font-size:10px;line-height:1.2;white-space:normal}
+.bottom-nav .scan-nav{flex:1.18}
+.op-notice{display:flex;align-items:center;gap:9px;border:1px solid #d6c4f8;background:#f5efff;border-radius:12px;padding:12px 14px;color:#5620a2;font-size:13px;margin:12px 0}
+.op-workspace{margin-top:20px}
+.op-inline{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.op-inline input{flex:1;min-width:110px}
+.op-tabs{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:16px 0}
+.op-tabs button{border:1px solid #e1dbe9;background:#fff;color:#5b4d69;border-radius:12px;padding:10px 13px;display:flex;align-items:center;gap:5px;font-size:13px;font-weight:650;cursor:pointer}
+.op-tabs button.chosen{border-color:#5E17EB;background:#f2eafd;color:#5E17EB}
+.op-selection-toolbar{display:flex;justify-content:space-between;align-items:center;margin:10px 0;font-size:13px}
+.op-selection-toolbar label{display:flex;align-items:center;gap:8px}
+.op-package-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;margin:14px 0 20px;max-height:270px;overflow:auto}
+.op-package{display:flex;align-items:center;gap:10px;border:1px solid #e6e0ed;padding:12px;border-radius:12px;font-size:12px}
+.op-package span{display:flex;flex-direction:column;gap:4px}
+.op-package small{color:#746b7e}
+.op-three,.op-two{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:14px 0}
+.op-two{grid-template-columns:repeat(2,minmax(0,1fr))}
+.op-form{max-height:86vh;overflow-y:auto;max-width:630px;display:flex;flex-direction:column;gap:10px}
+.op-form label,.op-three label,.op-two label{display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:650;color:#5b4b67}
+.op-form input,.op-form select,.op-three select,.op-two input{border:1px solid #d9d1e2;border-radius:11px;padding:11px;width:100%;background:white;color:#32273d;font:inherit;font-size:14px;box-sizing:border-box}
+.op-modal-header{display:flex;align-items:flex-start;justify-content:space-between}
+.op-modal-header .close-modal{position:static}
+.op-qr-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:15px;margin:18px 0}
+.op-qr-tile{display:flex;flex-direction:column;align-items:center;gap:8px;background:#fcf9ff;border:1px solid #e4d8f0;border-radius:14px;padding:12px}
+.op-qr-tile img{width:140px;height:140px;object-fit:contain}
+.op-qr-tile strong{font-size:14px}
+.op-qr-tile .secondary{font-size:11px;padding:8px}
+.op-qr-tile .op-inline{justify-content:center}
+.op-confirm{max-width:460px}
+.op-confirm .op-inline{justify-content:flex-end}
+.op-status{font-size:12px;background:#f4edfc;color:#632f99;padding:7px 10px;border-radius:999px;display:inline-block;white-space:nowrap}
+.op-location{display:inline-flex;align-items:center;gap:5px;color:#6b597e;font-size:12px;min-width:125px}
+.op-inventory-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:12px 0}
+.op-inventory-actions span{font-size:12px}
+.op-history{background:#fbf8fe;border-radius:12px;padding:12px;max-height:140px;overflow:auto;font-size:12px;color:#6d527b}
+.op-history div{padding:5px;border-bottom:1px solid #eee4f6}
+.op-meta{display:grid;gap:6px;margin:12px 0}
+.op-meta div{display:flex;justify-content:space-between;gap:16px;font-size:13px;border-bottom:1px solid #eee;padding:6px 0}
+.op-meta span{color:#74687e}
+.op-inventory-actions button:disabled,.op-workspace button:disabled{opacity:.5;cursor:not-allowed}
+@media(max-width:650px){.op-three{grid-template-columns:1fr}.op-two{grid-template-columns:repeat(2,minmax(0,1fr))}.bottom-nav small{font-size:9px}.bottom-nav .scan-fab{width:54px;height:54px}.op-qr-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.op-qr-tile img{width:110px;height:110px}.op-workspace .card-head{align-items:start}.op-form{max-height:92vh}}
