@@ -1,0 +1,4 @@
+label_id,product_name,beef_type,supplier_batch,production_date,expiration_date,source_package_id
+LBL-SN-000101,Beef Sirloin,Sirloin,SUP-2026-001,2026-11-24,2026-12-01,SUP-PKG-0001
+LBL-SN-000102,Beef Sirloin,Sirloin,SUP-2026-001,2026-11-24,2026-12-01,SUP-PKG-0002
+LBL-SN-000103,Beef Sirloin,Sirloin,SUP-2026-001,2026-11-24,2026-12-01,SUP-PKG-0003
