@@ -50,6 +50,8 @@ export default function App(){
   const [priority]=useState(()=>readStore('sensanin-threshold-priority',12));
   const [inspection]=useState(()=>readStore('sensanin-threshold-inspection',25));
   const [result,setResult]=useState<Scan|null>(null);const [message,setMessage]=useState('');
+  const [qrDiagnostic,setQrDiagnostic]=useState('Scanner belum diaktifkan.');
+  const [lastRawQR,setLastRawQR]=useState('');
   const videoRef=useRef<HTMLVideoElement>(null);const cameraControls=useRef<{stop:()=>void}|null>(null);const qrLocked=useRef(false);const recognizedFrames=useRef(0);
   const productsRef=useRef(products); productsRef.current=products;
   const labelsRef=useRef(labelStock); labelsRef.current=labelStock;
@@ -78,27 +80,37 @@ export default function App(){
     let cancelled=false;
     const reader=new BrowserQRCodeReader();
     setCameraError('');
-    setMessage('Kamera aktif. Arahkan label SENSANIN asli: QR di kiri, patch ungu di kanan.');
+    setMessage('Kamera aktif. Arahkan QR ke tengah bingkai, usahakan tajam dan tidak terlalu jauh.');
+    setQrDiagnostic('Mengaktifkan pembaca QR...');
     (async()=>{
       try{
         const controls=await reader.decodeFromConstraints(
           {audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}}},
-          videoRef.current!, decoded=>{
-            if (decoded) {
-             setMessage(`QR berhasil dibaca: ${decoded.getText()}`);
+          videoRef.current!, (decoded, decodeError)=>{
+            if(cancelled||qrLocked.current)return;
+            if(!decoded){
+              // QR decode runs repeatedly. Most frames naturally return NotFoundException.
+              // Do not reset the camera or spam React updates for each undecodable frame.
+              if(decodeError && decodeError.name!=='NotFoundException' && decodeError.name!=='ChecksumException' && decodeError.name!=='FormatException'){
+                setQrDiagnostic('Decoder menerima frame, tetapi gagal: '+decodeError.name);
+              }
+              return;
             }
-            if(!decoded||cancelled||qrLocked.current)return;
-            const label=resolveLabelQR(decoded.getText(),labelsRef.current);
-            if(!label){recognizedFrames.current=0;setMessage('QR terbaca, tetapi Label ID belum diverifikasi dalam Penerimaan atau tidak terdaftar pada manifest.');return;}
+            const rawText=decoded.getText();
+            setLastRawQR(rawText);
+            setQrDiagnostic('QR BERHASIL DIBACA oleh decoder. Memeriksa data produk...');
+            const label=resolveLabelQR(rawText,labelsRef.current);
+            if(!label){recognizedFrames.current=0;setMessage('QR terbaca ('+rawText+'), tetapi belum terdaftar / terverifikasi dalam Penerimaan. Decoder kamera berfungsi.');return;}
             if((label.supermarketId||'SUPERMARKET-A')!==activeStoreRef.current){recognizedFrames.current=0;setMessage('Label tidak dialokasikan untuk supermarket aktif.');return;}
             if(label.status==='DAMAGED'||label.status==='RETIRED'){recognizedFrames.current=0;setMessage('Label '+label.id+' ditandai rusak/invalid dan tidak boleh digunakan.');return;}
             if(!label.packageId || label.status!=='ASSIGNED'){recognizedFrames.current=0;setMessage('Label '+label.id+' belum dikaitkan ke paket. Buka Penerimaan → Verifikasi Kedatangan.');return;}
             const product=productsRef.current.find(p=>p.id===label.packageId);
             if(!product){recognizedFrames.current=0;setMessage('Package ID yang terkait dengan label '+label.id+' tidak ditemukan.');return;}
             const video=videoRef.current;
-            if(!video?.videoWidth)return;
+            if(!video?.videoWidth){setQrDiagnostic('QR ditemukan, namun video belum memiliki resolusi siap dianalisis.');return;}
             const sample=analyzeLiveFrame(video,decoded,product.initialColorReference);
             if(!sample.ok){
+              setQrDiagnostic('QR '+rawText+' TERBACA, tetapi deteksi indikator warna belum berhasil.');
               recognizedFrames.current=0;
               setMessage('QR '+product.id+' terdeteksi. '+sample.reason);
               return;
@@ -120,12 +132,12 @@ export default function App(){
             setCameraOn(false);
             setMessage(`✓ Label ${label.id} terbaca → Paket ${product.id}. ΔE dihitung dari frame kamera; status kesegaran tetap simulasi.`);
           });
-        if(cancelled)controls.stop();else cameraControls.current=controls;
+        if(cancelled)controls.stop();else {cameraControls.current=controls;setQrDiagnostic('Decoder QR aktif. Jika QR belum terbaca, dekatkan QR dan pastikan fokus kamera.');}
       }catch(e){if(!cancelled){setCameraError('Gagal mengakses kamera: periksa izin browser dan HTTPS. '+String(e));setCameraOn(false)}}
     })();
     return ()=>{cancelled=true;cameraControls.current?.stop();cameraControls.current=null};
   },[cameraOn,tab,loggedIn,priority,inspection]);
-  function navigate(t:Tab){if(t!=='scan')setCameraOn(false);if(t==='scan'){qrLocked.current=false;recognizedFrames.current=0;setScannedQR(false);setResult(null);setCameraOn(true)}setTab(t);setMessage('');window.scrollTo({top:0,behavior:'smooth'})}
+  function navigate(t:Tab){if(t!=='scan')setCameraOn(false);if(t==='scan'){qrLocked.current=false;recognizedFrames.current=0;setScannedQR(false);setResult(null);setLastRawQR('');setQrDiagnostic('Memulai kamera...');setCameraOn(true)}setTab(t);setMessage('');window.scrollTo({top:0,behavior:'smooth'})}
   function login(){const name=loginName.trim()||'Staf Supermarket';sessionStorage.setItem('sensanin-demo-login','yes');sessionStorage.setItem('sensanin-demo-user',name);setUser(name);setLoggedIn(true);setTab('summary')}
   function handleImportInbound(raw:string,id:string,supplier:string,ref:string){
     const saved=addInboundManifest(inbound,operationsRef.current,labelsRef.current,raw,id,supplier,activeStore,ref,userRef.current);
@@ -199,6 +211,7 @@ export default function App(){
       <div className="camera-buttons">{cameraOn?<button className="secondary" onClick={()=>setCameraOn(false)}><X size={17}/> Hentikan</button>:<button className="primary wide" onClick={()=>{qrLocked.current=false;recognizedFrames.current=0;setScannedQR(false);setResult(null);setCameraError('');setCameraOn(true)}}><ScanLine size={18}/> {scannedQR?'Scan Kemasan Lain':'Buka Live Scanner'}</button>}</div>
       {cameraError&&<p className="error-text">{cameraError}</p>}
       {message&&<div className="feedback" role="status" aria-live="polite">{message}</div>}
+      <div className="feedback" role="status"><strong>Diagnostik QR:</strong> {qrDiagnostic}<div style={{marginTop:6,wordBreak:'break-word'}}><strong>Isi QR terakhir:</strong> {lastRawQR || 'Belum ada QR yang berhasil didekode'}</div></div>
       <div className="live-scan-hint"><Info size={17}/><span><b>Label mengikuti desain SENSANIN saat ini.</b> QR di kiri dan indikator ungu besar di kanan. Sistem memakai area putih label sebagai referensi cahaya, jadi hindari bayangan dan pantulan berlebih.</span></div>
       <a className="label-download" href={asset('current-label-reference.png')} target="_blank" rel="noreferrer">Lihat contoh label SENSANIN saat ini →</a>
       <p className="helper">Untuk menguji kamera HP, gunakan label SENSANIN yang desainnya sama seperti contoh ini. QR harus berisi Label ID yang sudah tercatat dan dikaitkan dengan paket, sedangkan patch ungu harus terlihat utuh.</p></section>
