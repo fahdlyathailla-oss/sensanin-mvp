@@ -84,6 +84,9 @@ export default function App(){
         const controls=await reader.decodeFromConstraints(
           {audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}}},
           videoRef.current!, decoded=>{
+            if (decoded) {
+             setMessage(`QR berhasil dibaca: ${decoded.getText()}`);
+            }
             if(!decoded||cancelled||qrLocked.current)return;
             const label=resolveLabelQR(decoded.getText(),labelsRef.current);
             if(!label){recognizedFrames.current=0;setMessage('QR terbaca, tetapi Label ID belum diverifikasi dalam Penerimaan atau tidak terdaftar pada manifest.');return;}
